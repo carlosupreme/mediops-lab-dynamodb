@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MediOps · Laboratorio de modelado DynamoDB</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-1: #2a78d6;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --warning-ink: #8a6100;
+    --shadow: 0 1px 2px rgba(11,11,11,.04), 0 4px 12px rgba(11,11,11,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+      --border: rgba(255,255,255,0.10); --series-1: #3987e5;
+      --warning-ink: #fab219;
+      --shadow: 0 1px 2px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --border: rgba(255,255,255,0.10); --series-1: #3987e5;
+    --warning-ink: #fab219;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--plane); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; }
+  h3 { font-size: 12px; margin: 0 0 10px; font-weight: 600; color: var(--ink-2);
+       text-transform: uppercase; letter-spacing: .06em; }
+  a { color: var(--series-1); }
+
+  header {
+    position: sticky; top: 0; z-index: 20; background: var(--surface);
+    border-bottom: 1px solid var(--border); padding: 12px 20px;
+  }
+  .head-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .spacer { flex: 1 1 auto; }
+
+  /* una sola fila de controles, arriba de todo lo que afecta */
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  button, select, input {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 7px; padding: 6px 11px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--axis); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+  input[type="search"] { min-width: 190px; }
+
+  main { padding: 20px; max-width: 1360px; margin: 0 auto; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  .tab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    border-radius: 0; padding: 9px 14px; color: var(--ink-2);
+  }
+  .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--series-1); font-weight: 600; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px; box-shadow: var(--shadow); margin-bottom: 18px;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; box-shadow: var(--shadow);
+  }
+  .tile .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .tile .value { font-size: 26px; font-weight: 640; letter-spacing: -0.02em; margin-top: 4px; }
+  .tile .value .unit { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .tile .foot { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+  th { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr.pat { cursor: pointer; }
+  tbody tr.pat:hover { background: color-mix(in srgb, var(--series-1) 5%, transparent); }
+  .grupo-row td {
+    background: color-mix(in srgb, var(--ink) 3%, transparent);
+    font-size: 11px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--ink-2); border-bottom: 1px solid var(--border);
+  }
+  .scroll-x { overflow-x: auto; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+    font-weight: 600; padding: 2px 8px 2px 6px; border-radius: 999px;
+    border: 1px solid var(--border); white-space: nowrap;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .v-ok    { color: var(--good); }         .v-ok .dot    { background: var(--good); }
+  .v-aviso { color: var(--warning-ink); }  .v-aviso .dot { background: var(--warning); }
+  .v-grave { color: var(--critical); }     .v-grave .dot { background: var(--critical); }
+  .chip {
+    font-size: 11px; color: var(--ink-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 6px; white-space: nowrap;
+  }
+
+  /* medidor de eficiencia: barra fina + valor siempre visible (nunca color solo) */
+  .meter { display: flex; align-items: center; gap: 8px; }
+  .meter .track { width: 62px; height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; flex: none; }
+  .meter .fill { height: 100%; border-radius: 3px; }
+  .meter .val { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-2); min-width: 34px; }
+
+  /* gráfica de barras horizontales: un solo color, extremos redondeados, 2px de aire */
+  .bars { display: flex; flex-direction: column; gap: 2px; }
+  .bar-row { display: grid; grid-template-columns: minmax(120px, 260px) 1fr auto; gap: 10px; align-items: center; padding: 3px 0; }
+  .bar-row:hover .bar { filter: brightness(1.12); }
+  .bar-label { color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .bar-track { height: 14px; display: flex; align-items: center; }
+  .bar { height: 10px; background: var(--series-1); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .bar-val { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-2); min-width: 58px; text-align: right; }
+
+  .detail { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
+  .detail-inner { padding: 4px 10px 16px; display: grid; gap: 14px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .finding { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 8px;
+             border: 1px solid var(--border); margin-bottom: 6px; font-size: 13px; }
+  .finding .ico { font-weight: 700; flex: none; }
+  pre { margin: 0; background: var(--plane); border: 1px solid var(--border); border-radius: 8px;
+        padding: 10px; overflow-x: auto; font-size: 11.5px; max-height: 260px; }
+
+  .log { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink-2);
+         max-height: 140px; overflow-y: auto; }
+  .empty { color: var(--muted); padding: 34px 10px; text-align: center; }
+  .note { font-size: 12.5px; color: var(--ink-2); border-left: 2px solid var(--axis); padding-left: 10px; margin: 0; }
+  #tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 10px; font-size: 12px; box-shadow: var(--shadow); z-index: 50; max-width: 320px;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="head-row">
+    <h1>Laboratorio de modelado · DynamoDB</h1>
+    <span class="chip" id="chip-endpoint">—</span>
+    <span class="chip" id="chip-tabla">—</span>
+    <span class="chip" id="chip-dataset">sin dataset</span>
+    <span class="spacer"></span>
+    <button id="btn-tema" title="Cambiar tema">◐ Tema</button>
+  </div>
+  <div class="controls">
+    <select id="escala"></select>
+    <button id="btn-seed" class="primary">Generar datos mock</button>
+    <span class="sub">·</span>
+    <select id="rep">
+      <option value="1">1 corrida</option>
+      <option value="3" selected>3 corridas</option>
+      <option value="5">5 corridas</option>
+      <option value="10">10 corridas</option>
+    </select>
+    <button id="btn-run">Ejecutar todos los patrones</button>
+    <button id="btn-part">Analizar particiones</button>
+    <span class="spacer"></span>
+    <span class="sub" id="estado-txt"></span>
+  </div>
+</header>
+
+<main>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-tab="patrones">Patrones de acceso</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="particiones">Particiones</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="carga">Prueba de carga</button>
+  </div>
+
+  <!-- ───────────── Patrones ───────────── -->
+  <section id="tab-patrones">
+    <div class="tiles" id="tiles-patrones"></div>
+
+    <div class="card">
+      <div class="controls" style="margin: 0 0 14px;">
+        <select id="f-grupo"><option value="">Todas las épicas</option></select>
+        <select id="f-veredicto">
+          <option value="">Todo veredicto</option>
+          <option value="grave">Sólo graves</option>
+          <option value="aviso">Sólo avisos</option>
+          <option value="ok">Sólo OK</option>
+        </select>
+        <select id="f-prioridad">
+          <option value="">Toda prioridad</option>
+          <option>Muy alta</option><option>Alta</option><option>Media alta</option>
+          <option>Media</option><option>Media-baja</option><option>Baja</option>
+        </select>
+        <input type="search" id="f-texto" placeholder="Buscar patrón, HU o clave…" />
+      </div>
+      <div class="scroll-x">
+        <table id="tabla-patrones">
+          <thead>
+            <tr>
+              <th style="width:64px">ID</th>
+              <th>Patrón</th>
+              <th>Índice</th>
+              <th class="num">Peticiones</th>
+              <th class="num">Items</th>
+              <th class="num">Examinados</th>
+              <th>Eficiencia</th>
+              <th class="num">Unidades</th>
+              <th class="num">p50 / p95</th>
+              <th>Veredicto</th>
+            </tr>
+          </thead>
+          <tbody id="cuerpo-patrones"></tbody>
+        </table>
+      </div>
+      <p class="note" style="margin-top:14px">
+        La latencia es de DynamoDB Local (SQLite en tu máquina): sirve para comparar patrones
+        entre sí, no como predicción del servicio real. Las señales que sí trasladan son
+        estructurales: peticiones, items examinados vs devueltos, unidades y paginación.
+      </p>
+    </div>
+  </section>
+
+  <!-- ───────────── Particiones ───────────── -->
+  <section id="tab-particiones" class="hidden">
+    <div class="tiles" id="tiles-particiones"></div>
+    <div class="card">
+      <div class="controls" style="margin:0 0 16px">
+        <select id="f-indice">
+          <option value="Tabla">Tabla base (PK)</option>
+          <option value="GSI1">GSI1 — identificadores únicos</option>
+          <option value="GSI2">GSI2 — agendas y colecciones por fecha</option>
+          <option value="GSI3">GSI3 — pendientes (sparse)</option>
+          <option value="GSI4">GSI4 — relaciones inversas</option>
+        </select>
+      </div>
+      <h2 id="titulo-particiones">Particiones más pobladas</h2>
+      <div class="bars" id="grafica-particiones"></div>
+      <div class="scroll-x" style="margin-top:18px">
+        <table id="tabla-particiones-twin">
+          <thead><tr><th>Clave de partición</th><th class="num">Items</th><th class="num">KB</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Reparto por tipo de entidad</h2>
+      <div class="scroll-x">
+        <table id="tabla-tipos">
+          <thead><tr><th>Entidad</th><th class="num">Items</th><th class="num">KB</th><th>Peso</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Colecciones por prefijo de clave</h2>
+      <div class="scroll-x">
+        <table id="tabla-prefijos">
+          <thead><tr><th>Prefijo</th><th class="num">Particiones</th><th class="num">Items</th>
+            <th class="num">Media / partición</th><th class="num">Máx. en una partición</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── Carga ───────────── -->
+  <section id="tab-carga" class="hidden">
+    <div class="card">
+      <h2>Prueba de carga sobre un patrón</h2>
+      <div class="controls" style="margin:0 0 16px">
+        <select id="carga-patron"></select>
+        <select id="carga-total">
+          <option value="100">100 ejecuciones</option>
+          <option value="300" selected>300 ejecuciones</option>
+          <option value="1000">1000 ejecuciones</option>
+        </select>
+        <select id="carga-conc">
+          <option value="1">sin concurrencia</option>
+          <option value="10">10 en paralelo</option>
+          <option value="25" selected>25 en paralelo</option>
+          <option value="50">50 en paralelo</option>
+        </select>
+        <button id="btn-carga" class="primary">Ejecutar</button>
+      </div>
+      <div class="tiles" id="tiles-carga"></div>
+      <div class="scroll-x">
+        <table id="tabla-carga">
+          <thead><tr><th>Patrón</th><th class="num">Ejec.</th><th class="num">Conc.</th>
+            <th class="num">ops/s</th><th class="num">p50</th><th class="num">p95</th>
+            <th class="num">p99</th><th class="num">Fallos</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="note" style="margin-top:14px">
+        Mide el motor local, no DynamoDB. Úsalo para comparar el coste relativo de dos
+        patrones bajo presión y para detectar fallos de condición (traslapes, transacciones
+        que chocan), no para dimensionar capacidad.
+      </p>
+    </div>
+  </section>
+</main>
+
+<div id="tip" role="tooltip"></div>
+
+<script type="module">
+const $ = (s) => document.querySelector(s);
+const el = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const fmt = (n) => (n == null ? '—' : n.toLocaleString('es-MX'));
+const ICO = { ok: '✓', aviso: '▲', grave: '✕' };
+const ETIQUETA = { ok: 'OK', aviso: 'Aviso', grave: 'Grave' };
+
+let estado = {};
+let catalogo = [];
+let resultados = new Map();
+let particiones = null;
+let cargas = [];
+
+// ───────── tema ─────────
+$('#btn-tema').onclick = () => {
+  const actual = document.documentElement.dataset.theme;
+  const oscuro = actual ? actual === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = oscuro ? 'light' : 'dark';
+};
+
+// ───────── tabs ─────────
+document.querySelectorAll('.tab').forEach((t) => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x === t)));
+    for (const s of ['patrones', 'particiones', 'carga'])
+      $(`#tab-${s}`).classList.toggle('hidden', s !== t.dataset.tab);
+  };
+});
+
+// ───────── tooltip ─────────
+const tip = $('#tip');
+const mostrarTip = (e, html) => {
+  tip.innerHTML = html;
+  tip.style.opacity = '1';
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - r.width - 10) + 'px';
+  tip.style.top = Math.min(e.clientY + 14, innerHeight - r.height - 10) + 'px';
+};
+const ocultarTip = () => { tip.style.opacity = '0'; };
+
+// ───────── estado inicial ─────────
+async function cargarEstado() {
+  estado = await (await fetch('/api/estado')).json();
+  $('#chip-endpoint').textContent = estado.endpoint;
+  $('#chip-tabla').textContent = estado.tabla ? 'tabla mediops ✓' : 'tabla mediops ✗';
+  const sel = $('#escala');
+  if (!sel.options.length)
+    for (const [k, v] of Object.entries(estado.escalas)) sel.add(new Option(v.label, k, k === 'medium', k === 'medium'));
+  const f = estado.fixtures;
+  $('#chip-dataset').textContent = f
+    ? `${fmt(f.items)} items · escala ${f.scale} · ${f.segundos}s`
+    : 'sin dataset';
+  $('#btn-run').textContent = `Ejecutar los ${estado.patrones} patrones`;
+  $('#btn-run').disabled = !f;
+  $('#btn-part').disabled = !f;
+}
+
+async function cargarCatalogo() {
+  const d = await (await fetch('/api/patrones')).json();
+  catalogo = d.patrones;
+  const g = $('#f-grupo');
+  d.grupos.forEach((x) => g.add(new Option(x, x)));
+  const cp = $('#carga-patron');
+  catalogo.forEach((p) => cp.add(new Option(`${p.id} · ${p.nombre}`, p.id)));
+  pintarPatrones();
+}
+
+// ───────── seed ─────────
+$('#btn-seed').onclick = () => {
+  const escala = $('#escala').value;
+  if (!confirm(`Esto BORRA y recrea la tabla local "mediops" con la escala "${escala}". ¿Continuar?`)) return;
+  bloquear(true);
+  const src = new EventSource(`/api/seed?scale=${escala}`);
+  src.addEventListener('progreso', (e) => ($('#estado-txt').textContent = JSON.parse(e.data).mensaje));
+  src.addEventListener('listo', async () => {
+    src.close(); bloquear(false); resultados.clear(); particiones = null;
+    await cargarEstado(); pintarPatrones();
+    $('#estado-txt').textContent = 'Dataset listo.';
+  });
+  src.addEventListener('error', (e) => {
+    src.close(); bloquear(false);
+    $('#estado-txt').textContent = e.data ? JSON.parse(e.data).mensaje : 'Error generando el dataset.';
+  });
+};
+
+// ───────── ejecutar todos ─────────
+$('#btn-run').onclick = () => {
+  bloquear(true);
+  resultados.clear();
+  const src = new EventSource(`/api/run-all?rep=${$('#rep').value}`);
+  src.addEventListener('inicio', (e) => ($('#estado-txt').textContent = `Ejecutando ${JSON.parse(e.data).id}…`));
+  src.addEventListener('resultado', (e) => {
+    const r = JSON.parse(e.data);
+    resultados.set(r.id, r);
+    pintarPatrones();
+  });
+  src.addEventListener('fin', () => { src.close(); bloquear(false); $('#estado-txt').textContent = 'Ejecución completa.'; });
+  src.addEventListener('error', (e) => {
+    src.close(); bloquear(false);
+    $('#estado-txt').textContent = e.data ? JSON.parse(e.data).mensaje : 'Error ejecutando los patrones.';
+  });
+};
+
+const bloquear = (v) => document.querySelectorAll('header button, header select').forEach((b) => {
+  if (b.id !== 'btn-tema') b.disabled = v;
+});
+
+// ───────── tabla de patrones ─────────
+['#f-grupo', '#f-veredicto', '#f-prioridad'].forEach((s) => ($(s).onchange = pintarPatrones));
+$('#f-texto').oninput = pintarPatrones;
+
+function pintarPatrones() {
+  const fg = $('#f-grupo').value, fv = $('#f-veredicto').value;
+  const fp = $('#f-prioridad').value, ft = $('#f-texto').value.toLowerCase();
+
+  const lista = catalogo.filter((p) => {
+    const r = resultados.get(p.id);
+    if (fg && p.grupo !== fg) return false;
+    if (fp && p.prioridad !== fp) return false;
+    if (fv && (!r || r.veredicto !== fv)) return false;
+    if (ft && !`${p.id} ${p.nombre} ${p.clave} ${(p.hu || []).join(' ')}`.toLowerCase().includes(ft)) return false;
+    return true;
+  });
+
+  pintarTilesPatrones();
+  const tb = $('#cuerpo-patrones');
+  tb.textContent = '';
+  if (!lista.length) {
+    const tr = el('tr'); const td = el('td', 'empty', 'Ningún patrón coincide con el filtro.');
+    td.colSpan = 10; tr.append(td); tb.append(tr); return;
+  }
+
+  let grupoActual = null;
+  for (const p of lista) {
+    if (p.grupo !== grupoActual) {
+      grupoActual = p.grupo;
+      const tr = el('tr', 'grupo-row'); const td = el('td', null, grupoActual);
+      td.colSpan = 10; tr.append(td); tb.append(tr);
+    }
+    tb.append(filaPatron(p, resultados.get(p.id)));
+  }
+}
+
+function filaPatron(p, r) {
+  const tr = el('tr', 'pat');
+  const s = r?.resumen;
+
+  const tdId = el('td'); tdId.append(el('span', 'mono', p.id)); tr.append(tdId);
+
+  const tdN = el('td');
+  tdN.append(el('div', null, p.nombre));
+  const meta = el('div', 'sub');
+  meta.textContent = `${p.op} · ${p.prioridad}${p.hu?.length ? ' · ' + p.hu.join(', ') : ''}`;
+  tdN.append(meta);
+  tr.append(tdN);
+
+  tr.append(el('td', null, p.indice));
+
+  if (r?.omitido) {
+    const td = el('td', 'sub', `Omitido: ${r.omitido}`); td.colSpan = 7; tr.append(td); return tr;
+  }
+  if (!r) {
+    const td = el('td', 'sub', 'sin ejecutar'); td.colSpan = 7; tr.append(td);
+    tr.onclick = () => ejecutarUno(p.id, tr);
+    return tr;
+  }
+
+  tr.append(el('td', 'num', fmt(s?.peticiones)));
+  tr.append(el('td', 'num', fmt(s?.items)));
+  tr.append(el('td', 'num', fmt(s?.examinados)));
+
+  const tdE = el('td');
+  tdE.append(p.escritura ? el('span', 'sub', 'n/a · escritura') : medidor(s?.eficiencia ?? 1));
+  tr.append(tdE);
+
+  tr.append(el('td', 'num', s ? `${s.unidades} ${s.tipoUnidad}` : '—'));
+  tr.append(el('td', 'num', `${r.latencia.p50} / ${r.latencia.p95} ms`));
+
+  const tdV = el('td');
+  tdV.append(insignia(r.veredicto));
+  tr.append(tdV);
+
+  tr.onclick = () => alternarDetalle(tr, p, r);
+  return tr;
+}
+
+function insignia(v) {
+  const b = el('span', `badge v-${v}`);
+  b.append(el('span', 'dot'));
+  b.append(document.createTextNode(`${ICO[v]} ${ETIQUETA[v]}`));
+  return b;
+}
+
+function medidor(ratio) {
+  const pct = Math.round(ratio * 100);
+  const color = ratio >= 0.9 ? 'var(--good)' : ratio >= 0.5 ? 'var(--warning)' : 'var(--critical)';
+  const w = el('div', 'meter');
+  const track = el('div', 'track');
+  const fill = el('div', 'fill');
+  fill.style.width = `${Math.max(2, pct)}%`;
+  fill.style.background = color;
+  track.append(fill);
+  w.append(track, el('span', 'val', `${pct}%`));
+  return w;
+}
+
+async function ejecutarUno(id, tr) {
+  $('#estado-txt').textContent = `Ejecutando ${id}…`;
+  const r = await (await fetch(`/api/run/${id}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rep: Number($('#rep').value) }),
+  })).json();
+  if (r.error) { $('#estado-txt').textContent = r.error; return; }
+  resultados.set(id, r);
+  $('#estado-txt').textContent = '';
+  pintarPatrones();
+}
+
+function alternarDetalle(tr, p, r) {
+  const sig = tr.nextElementSibling;
+  if (sig?.classList.contains('detail')) { sig.remove(); return; }
+  const fila = el('tr', 'detail');
+  const td = el('td'); td.colSpan = 10;
+  const box = el('div', 'detail-inner');
+
+  const kv = el('dl', 'kv');
+  const par = (k, v) => { kv.append(el('dt', null, k)); const d = el('dd'); d.append(v instanceof Node ? v : document.createTextNode(v)); kv.append(d); };
+  par('Clave', el('span', 'mono', p.clave));
+  par('Índices tocados', (r.resumen?.indices ?? []).join(', ') || '—');
+  par('Historias', (p.hu ?? []).join(', ') || '—');
+  par('Bytes leídos/escritos', `${fmt(r.resumen?.bytes)} B`);
+  par('Latencia local', `min ${r.latencia.min} · p50 ${r.latencia.p50} · p95 ${r.latencia.p95} · max ${r.latencia.max} ms (${r.latencia.corridas} corridas)`);
+  box.append(kv);
+
+  if (r.hallazgos?.length) {
+    const h = el('div');
+    h.append(el('h3', null, 'Hallazgos'));
+    for (const f of r.hallazgos) {
+      const d = el('div', 'finding');
+      const ico = el('span', `ico v-${f.nivel === 'grave' ? 'grave' : 'aviso'}`, f.nivel === 'grave' ? ICO.grave : ICO.aviso);
+      d.append(ico, el('span', null, f.msg));
+      h.append(d);
+    }
+    box.append(h);
+  } else {
+    const d = el('div', 'finding');
+    d.append(el('span', 'ico v-ok', ICO.ok), el('span', null, 'Un solo acceso directo por clave, sin filtros ni sobre-lectura.'));
+    box.append(d);
+  }
+
+  for (const n of r.notas ?? []) box.append(el('p', 'note', n));
+
+  if (r.peticiones?.length > 1) {
+    const w = el('div');
+    w.append(el('h3', null, `Peticiones (${r.peticiones.length})`));
+    const t = el('table');
+    t.innerHTML = '<thead><tr><th>#</th><th>Op</th><th>Índice</th><th>Etiqueta</th><th class="num">Items</th><th class="num">Examinados</th><th class="num">ms</th></tr></thead>';
+    const tb = el('tbody');
+    r.peticiones.slice(0, 25).forEach((q, i) => {
+      const row = el('tr');
+      row.append(el('td', 'num', String(i + 1)), el('td', null, q.op), el('td', null, q.index),
+        el('td', 'mono', q.label ?? '—'), el('td', 'num', fmt(q.count)), el('td', 'num', fmt(q.scanned)), el('td', 'num', String(q.ms)));
+      tb.append(row);
+    });
+    t.append(tb);
+    const sc = el('div', 'scroll-x'); sc.append(t); w.append(sc);
+    box.append(w);
+  }
+
+  if (r.muestra?.length) {
+    const w = el('div');
+    w.append(el('h3', null, 'Muestra de items devueltos'));
+    w.append(el('pre', null, JSON.stringify(r.muestra, null, 2)));
+    box.append(w);
+  }
+
+  td.append(box); fila.append(td); tr.after(fila);
+}
+
+function pintarTilesPatrones() {
+  const rs = [...resultados.values()].filter((r) => !r.omitido);
+  const c = (v) => rs.filter((r) => r.veredicto === v).length;
+  const unidades = rs.reduce((a, r) => a + (r.resumen?.unidades ?? 0), 0);
+  const peticiones = rs.reduce((a, r) => a + (r.resumen?.peticiones ?? 0), 0);
+  const tiles = [
+    { label: 'Patrones ejecutados', value: `${rs.length}`, foot: `de ${catalogo.length} definidos` },
+    { label: '✓ Sin observaciones', value: c('ok'), foot: 'acceso directo por clave', color: 'var(--good)' },
+    { label: '▲ Con avisos', value: c('aviso'), foot: 'revisar coste o forma', color: 'var(--warning)' },
+    { label: '✕ Graves', value: c('grave'), foot: 'el modelado necesita cambio', color: 'var(--critical)' },
+    { label: 'Peticiones totales', value: fmt(peticiones), foot: 'una corrida de cada patrón' },
+    { label: 'Unidades estimadas', value: unidades.toFixed(1), foot: 'RCU/WCU aproximadas' },
+  ];
+  const cont = $('#tiles-patrones');
+  cont.textContent = '';
+  for (const t of tiles) {
+    const d = el('div', 'tile');
+    d.append(el('div', 'label', t.label));
+    const v = el('div', 'value', String(t.value));
+    if (t.color && Number(t.value) > 0) v.style.color = t.color;
+    d.append(v, el('div', 'foot', t.foot));
+    cont.append(d);
+  }
+}
+
+// ───────── particiones ─────────
+$('#btn-part').onclick = async () => {
+  $('#estado-txt').textContent = 'Recorriendo la tabla…';
+  bloquear(true);
+  try {
+    particiones = await (await fetch('/api/particiones')).json();
+    pintarParticiones();
+    $('#estado-txt').textContent = 'Análisis de particiones listo.';
+    document.querySelector('.tab[data-tab="particiones"]').click();
+  } catch (e) {
+    $('#estado-txt').textContent = 'Error analizando particiones.';
+  }
+  bloquear(false);
+};
+$('#f-indice').onchange = pintarParticiones;
+
+function pintarParticiones() {
+  if (!particiones) return;
+  const p = particiones;
+  const tiles = [
+    { label: 'Items en la tabla', value: fmt(p.total), foot: `${p.mb} MB aprox.` },
+    { label: 'Particiones lógicas', value: fmt(p.particiones), foot: 'claves PK distintas' },
+    { label: 'Items por partición', value: p.itemsPorParticion, foot: 'media' },
+    { label: 'Partición más grande', value: fmt(p.topParticiones[0]?.items ?? 0), foot: p.topParticiones[0]?.clave ?? '—' },
+  ];
+  const cont = $('#tiles-particiones');
+  cont.textContent = '';
+  for (const t of tiles) {
+    const d = el('div', 'tile');
+    d.append(el('div', 'label', t.label));
+    d.append(el('div', 'value', String(t.value)));
+    const f = el('div', 'foot', t.foot);
+    f.style.overflow = 'hidden'; f.style.textOverflow = 'ellipsis'; f.style.whiteSpace = 'nowrap';
+    d.append(f);
+    cont.append(d);
+  }
+
+  const idx = $('#f-indice').value;
+  const datos = idx === 'Tabla' ? p.topParticiones : p.topPorIndice[idx].top;
+  $('#titulo-particiones').textContent =
+    idx === 'Tabla'
+      ? 'Particiones más pobladas de la tabla base'
+      : `Particiones más pobladas de ${idx} · ${fmt(p.topPorIndice[idx].particiones)} claves, ${fmt(p.topPorIndice[idx].items)} items proyectados`;
+
+  const max = Math.max(1, ...datos.map((d) => d.items));
+  const g = $('#grafica-particiones');
+  g.textContent = '';
+  for (const d of datos) {
+    const row = el('div', 'bar-row');
+    const lab = el('div', 'bar-label', d.clave);
+    lab.title = d.clave;
+    const track = el('div', 'bar-track');
+    const bar = el('div', 'bar');
+    bar.style.width = `${(d.items / max) * 100}%`;
+    track.append(bar);
+    row.append(lab, track, el('div', 'bar-val', fmt(d.items)));
+    row.onmousemove = (e) => mostrarTip(e, `<strong>${d.clave}</strong><br>${fmt(d.items)} items · ${d.kb} KB`);
+    row.onmouseleave = ocultarTip;
+    g.append(row);
+  }
+
+  // gemelo tabular de la gráfica
+  const tb = $('#tabla-particiones-twin tbody');
+  tb.textContent = '';
+  for (const d of datos) {
+    const tr = el('tr');
+    tr.append(el('td', 'mono', d.clave), el('td', 'num', fmt(d.items)), el('td', 'num', String(d.kb)));
+    tb.append(tr);
+  }
+
+  const maxT = Math.max(1, ...p.porTipo.map((t) => t.items));
+  const tt = $('#tabla-tipos tbody');
+  tt.textContent = '';
+  for (const t of p.porTipo) {
+    const tr = el('tr');
+    const tdBar = el('td');
+    const track = el('div', 'bar-track');
+    const bar = el('div', 'bar');
+    bar.style.width = `${(t.items / maxT) * 100}%`;
+    track.append(bar);
+    tdBar.append(track);
+    tr.append(el('td', null, t.tipo), el('td', 'num', fmt(t.items)), el('td', 'num', String(t.kb)), tdBar);
+    tt.append(tr);
+  }
+
+  const tp = $('#tabla-prefijos tbody');
+  tp.textContent = '';
+  for (const x of p.porPrefijo) {
+    const tr = el('tr');
+    tr.append(el('td', 'mono', x.prefijo), el('td', 'num', fmt(x.particiones)), el('td', 'num', fmt(x.items)),
+      el('td', 'num', String(x.mediaItems)), el('td', 'num', fmt(x.max)));
+    tp.append(tr);
+  }
+}
+
+// ───────── carga ─────────
+$('#btn-carga').onclick = async () => {
+  const id = $('#carga-patron').value;
+  $('#btn-carga').disabled = true;
+  $('#estado-txt').textContent = `Prueba de carga sobre ${id}…`;
+  try {
+    const r = await (await fetch(`/api/carga/${id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ total: Number($('#carga-total').value), concurrencia: Number($('#carga-conc').value) }),
+    })).json();
+    if (r.error) { $('#estado-txt').textContent = r.error; return; }
+    cargas.unshift(r);
+    pintarCarga();
+    $('#estado-txt').textContent = '';
+  } finally {
+    $('#btn-carga').disabled = false;
+  }
+};
+
+function pintarCarga() {
+  const r = cargas[0];
+  const cont = $('#tiles-carga');
+  cont.textContent = '';
+  if (r) {
+    for (const t of [
+      { label: 'Throughput local', value: fmt(r.opsPorSegundo), unit: 'ops/s', foot: `${r.total} ejecuciones` },
+      { label: 'p50', value: r.p50, unit: 'ms', foot: `concurrencia ${r.concurrencia}` },
+      { label: 'p95', value: r.p95, unit: 'ms', foot: `p99 ${r.p99} ms` },
+      { label: 'Fallos', value: r.fallos, unit: '', foot: r.fallos ? 'condiciones rechazadas' : 'ninguno' },
+    ]) {
+      const d = el('div', 'tile');
+      d.append(el('div', 'label', t.label));
+      const v = el('div', 'value', String(t.value));
+      if (t.unit) v.append(el('span', 'unit', t.unit));
+      d.append(v, el('div', 'foot', t.foot));
+      cont.append(d);
+    }
+  }
+  const tb = $('#tabla-carga tbody');
+  tb.textContent = '';
+  for (const c of cargas) {
+    const tr = el('tr');
+    tr.append(el('td', null, `${c.id} · ${c.nombre}`), el('td', 'num', fmt(c.total)), el('td', 'num', String(c.concurrencia)),
+      el('td', 'num', fmt(c.opsPorSegundo)), el('td', 'num', String(c.p50)), el('td', 'num', String(c.p95)),
+      el('td', 'num', String(c.p99)), el('td', 'num', String(c.fallos)));
+    tb.append(tr);
+  }
+}
+
+await cargarEstado();
+await cargarCatalogo();
+</script>
+</body>
+</html>
