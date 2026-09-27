@@ -87,6 +87,12 @@ export class Ctx {
           ? res.ConsumedCapacity.reduce((a, c) => a + (c.CapacityUnits ?? 0), 0)
           : (res.ConsumedCapacity.CapacityUnits ?? 0)
         : null,
+      // Se guardan para que las reglas puedan inspeccionar la FORMA del acceso,
+      // no sólo su coste: si la clave lleva el tenant, si la escritura condicional
+      // deja al ítem recuperable. Es lo que faltaba para detectar una fuga entre
+      // organizaciones o una condición que cierra la puerta para siempre.
+      pkConsultada: params.ExpressionAttributeValues?.[':pk'] ?? null,
+      condicion: params.ConditionExpression ?? null,
       usaFiltro: Boolean(params.FilterExpression),
       esScan: op === 'Scan',
       // Un `Limit` explícito también deja LastEvaluatedKey: eso es paginación
@@ -132,6 +138,8 @@ export function resumen(requests) {
     indices: [...new Set(requests.map((r) => r.index))],
   };
   s.eficiencia = s.examinados > 0 ? +(s.items / s.examinados).toFixed(3) : 1;
+  s.pks = requests.map((r) => r.pkConsultada).filter(Boolean);
+  s.condiciones = requests.map((r) => r.condicion).filter(Boolean);
   return s;
 }
 

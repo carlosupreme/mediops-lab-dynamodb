@@ -55,6 +55,34 @@ const REGLAS = [
     msg: (s) => `Devuelve ${s.items} items sin Limit: colección grande y sin cota superior.`,
   },
   {
+    // La regla que faltaba cuando signos vitales, recetas e interconsultas se
+    // consultaban por `PATIENT#<id>` sin organización: un médico con acceso
+    // vigente en A veía lo registrado en B, y ningún patrón lo delataba.
+    id: 'aislamiento',
+    nivel: 'grave',
+    test: (s, p) =>
+      p.clinico === true &&
+      s.pks.length > 0 &&
+      !s.pks.every((pk) => pk.includes('ORG#')),
+    msg: (s) =>
+      `Consulta clínica sin organización en la clave: ${s.pks.find((pk) => !pk.includes('ORG#'))}. Cruza tenants (D-07, §7.3).`,
+  },
+  {
+    // Una condición `attribute_not_exists` sobre una clave determinista deja el
+    // ítem para siempre: tras un REVOKED o un REJECTED, la operación no se puede
+    // repetir nunca más. Hay que declarar qué estados admite reescribir.
+    id: 'escritura-determinista',
+    nivel: 'grave',
+    // Se satisface de dos formas: ampliando la condición, o declarando por qué
+    // no debe reescribirse nunca. Lo que no vale es dejarlo sin decidir.
+    test: (s, p) =>
+      p.claveDeterminista === true &&
+      !p.sinReescritura &&
+      s.condiciones.some((c) => /attribute_not_exists/.test(c) && !/\bOR\b/.test(c)),
+    msg: () =>
+      'Clave determinista con attribute_not_exists sin alternativa ni justificación: tras el primer estado terminal, la operación queda bloqueada para siempre. Amplía la condición o declara `sinReescritura`.',
+  },
+  {
     id: 'sin-datos',
     nivel: 'aviso',
     test: (s, p) => s.items === 0 && !p.escritura,
@@ -230,9 +258,55 @@ export async function analizarParticiones({ topN = 12 } = {}) {
     porPrefijo.set(prefijo(k), e);
   }
 
+  // Una partición sin componente temporal en la clave crece sin techo. Es el
+  // defecto que apareció cuatro veces seguidas en este modelo (auditoría,
+  // notificaciones, pagos e indicadores), así que ahora se mide.
+  //
+  // Acotar por tenant NO basta: `ORG#<org>#NOTIF` es de un solo tenant y aun así
+  // crecía sin fin, porque acumula un ítem por evento. La distinción real es
+  // entre colecciones que crecen con EVENTOS (necesitan bucket temporal) y las
+  // que crecen con ENTIDADES (acotadas por el tamaño del negocio). Eso no lo
+  // puede deducir una expresión regular, así que las excepciones se declaran
+  // aquí, con su motivo, en vez de esconderse tras un patrón más laxo.
+  const ACOTADA = /#\d{4}-\d{2}(-\d{2})?(#|$)/;
+  const ACEPTADAS = [
+    {
+      patron: /^GSI4: ORG#[^#]+#PATIENT$/,
+      motivo:
+        'Padrón de pacientes de una organización. Crece con entidades, no con eventos, ' +
+        'y particionarlo rompería la búsqueda por prefijo de nombre (AP-33).',
+    },
+    {
+      patron: /^GSI4: ORG#[^#]+#MEMBER$/,
+      motivo: 'Plantilla de la organización: acotada por el tamaño del equipo.',
+    },
+    {
+      patron: /^GSI4: (GUARDIAN|PAYER|DOCTOR)#/,
+      motivo: 'Relación inversa acotada por la actividad de una sola persona.',
+    },
+  ];
+  const excusada = (clave) => ACEPTADAS.find((a) => a.patron.test(clave));
+  const candidatas = [...porPK.entries()].map(([k, v]) => [k, v]);
+  for (const g of ['GSI1', 'GSI2', 'GSI3', 'GSI4']) {
+    for (const [k, v] of porGSI[g]) candidatas.push([`${g}: ${k}`, v]);
+  }
+  const sinCota = [];
+  const aceptadas = [];
+  for (const [clave, v] of candidatas) {
+    if (v.items < 200 || ACOTADA.test(clave)) continue;
+    const fila = { clave, items: v.items, kb: +(v.bytes / 1024).toFixed(1) };
+    const exc = excusada(clave);
+    if (exc) aceptadas.push({ ...fila, motivo: exc.motivo });
+    else sinCota.push(fila);
+  }
+  sinCota.sort((a, b) => b.items - a.items);
+  aceptadas.sort((a, b) => b.items - a.items);
+
   return {
     total,
     bytes,
+    sinCota,
+    particionesAceptadas: aceptadas,
     mb: +(bytes / 1048576).toFixed(2),
     particiones: porPK.size,
     itemsPorParticion: +(total / porPK.size).toFixed(2),
